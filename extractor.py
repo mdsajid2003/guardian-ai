@@ -160,6 +160,27 @@ def _error_document(
     )
 
 
+def _clean_amount_series(series: pd.Series) -> pd.Series:
+    """
+    Coerce an amount column to numeric regardless of formatting.
+
+    Handles:
+      ₹13,999  →  13999.0
+      $1,234.56  →  1234.56
+      (500)  →  -500.0      (accounting negative)
+      -₹200  →  -200.0
+      "—" / ""  →  NaN
+    """
+    s = series.astype(str)
+    # Remove currency symbols, thousands separators, and whitespace
+    s = s.str.replace(r"[₹$€£¥,\s]", "", regex=True)
+    # Convert accounting negatives: (500) → -500
+    s = s.str.replace(r"^\((.+)\)$", r"-\1", regex=True)
+    # Replace dashes / empty strings with NaN sentinel
+    s = s.str.replace(r"^[-–—]+$", "NaN", regex=True)
+    return pd.to_numeric(s, errors="coerce")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CSV / EXCEL EXTRACTION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -208,7 +229,8 @@ def _rule_based_extraction(
 ) -> Optional[FinancialDocument]:
     """
     Fast path: map columns directly without calling the AI.
-    Handles non-standard column names (e.g. Amazon 'total', 'net proceeds').
+    Handles non-standard column names (e.g. Amazon 'total', 'net proceeds')
+    and currency-formatted strings (e.g. '₹13,999', '$1,234.56', '(500)').
     Returns None only when no recognisable amount column can be found at all.
     """
     cols = list(df.columns)
@@ -217,20 +239,29 @@ def _rule_based_extraction(
     if amount_col is None:
         return None  # hand off to AI fallback
 
-    date_col  = _resolve_column(cols, _DATE_CANDIDATES)
-    desc_col  = _resolve_column(cols, _DESC_CANDIDATES)
+    date_col = _resolve_column(cols, _DATE_CANDIDATES)
+    desc_col = _resolve_column(cols, _DESC_CANDIDATES)
+
+    # ── Clean the amount column once, up-front ────────────────────────────────
+    # This handles ₹13,999 → 13999.0, (500) → -500.0, "—" → NaN, etc.
+    df = df.copy()
+    df[amount_col] = _clean_amount_series(df[amount_col])
+
+    # Also clean gst_amount if present
+    if "gst_amount" in cols:
+        df["gst_amount"] = _clean_amount_series(df["gst_amount"])
 
     line_items: list[LineItem] = []
     for _, row in df.iterrows():
         try:
-            raw_amount = row.get(amount_col)
+            raw_amount = row[amount_col]
             line_items.append(LineItem(
                 date=str(row[date_col]) if date_col else None,
                 description=str(row[desc_col]) if desc_col else None,
                 amount=float(raw_amount) if pd.notna(raw_amount) else None,
                 gst_amount=(
                     float(row["gst_amount"])
-                    if "gst_amount" in cols and pd.notna(row.get("gst_amount"))
+                    if "gst_amount" in cols and pd.notna(row["gst_amount"])
                     else None
                 ),
                 category=row.get("category") if "category" in cols else None,
@@ -239,11 +270,13 @@ def _rule_based_extraction(
         except Exception:
             continue
 
+    total = df[amount_col].sum(skipna=True)
+
     return FinancialDocument(
         doc_type=doc_type,
         filename=filename,
         line_items=line_items,
-        total_amount=float(df[amount_col].sum()),
+        total_amount=float(total) if pd.notna(total) else None,
         overall_confidence=0.9,
     )
 
