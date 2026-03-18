@@ -31,9 +31,9 @@ def _get_model(system_instruction: str) -> genai.GenerativeModel:
             pass
     genai.configure(api_key=api_key)
     return genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
-        system_instruction=system_instruction,
-    )
+    model_name="gemini-2.5-flash",
+    system_instruction=system_instruction,
+)
 
 
 _GEN_CFG_FULL = genai.GenerationConfig(max_output_tokens=2048, temperature=0.2)
