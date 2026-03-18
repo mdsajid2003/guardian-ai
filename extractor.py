@@ -57,8 +57,26 @@ Required schema:
 }
 """
 
-# Columns the rule-based extractor can map directly (lowercase)
-_OPTIONAL_FIELDS = ("date", "description", "gst_amount", "category")
+# Candidate column names for the "amount" field, in priority order.
+# Amazon CSVs use names like "total", "net proceeds", "item price", etc.
+_AMOUNT_CANDIDATES = (
+    "amount",
+    "total",
+    "net proceeds",
+    "item price",
+    "selling price",
+    "settlement amount",
+    "net amount",
+    "price",
+    "value",
+    "debit",
+    "credit",
+    "transaction amount",
+)
+
+# Candidate column names for the "date" and "description" fields.
+_DATE_CANDIDATES = ("date", "order date", "transaction date", "posting date", "ship date")
+_DESC_CANDIDATES = ("description", "item description", "product name", "title", "narration", "particulars")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -165,28 +183,57 @@ def _load_dataframe(file_bytes: bytes, ext: str) -> tuple[pd.DataFrame, Document
     return df, DocumentType.CSV
 
 
-def _rule_based_extraction(df: pd.DataFrame, doc_type: DocumentType, filename: str) -> Optional[FinancialDocument]:
+def _resolve_column(df_columns: list[str], candidates: tuple[str, ...]) -> Optional[str]:
+    """
+    Return the first candidate name that exists in df_columns (case-insensitive).
+    Also matches columns that *contain* the candidate as a substring, so
+    'net proceeds' matches 'net proceeds (inr)' etc.
+    """
+    col_set = set(df_columns)
+    for candidate in candidates:
+        # Exact match first
+        if candidate in col_set:
+            return candidate
+        # Substring match fallback
+        for col in df_columns:
+            if candidate in col:
+                return col
+    return None
+
+
+def _rule_based_extraction(
+    df: pd.DataFrame,
+    doc_type: DocumentType,
+    filename: str,
+) -> Optional[FinancialDocument]:
     """
     Fast path: map columns directly without calling the AI.
-    Returns None if the required 'amount' column is absent.
+    Handles non-standard column names (e.g. Amazon 'total', 'net proceeds').
+    Returns None only when no recognisable amount column can be found at all.
     """
-    if "amount" not in df.columns:
-        return None
+    cols = list(df.columns)
+
+    amount_col = _resolve_column(cols, _AMOUNT_CANDIDATES)
+    if amount_col is None:
+        return None  # hand off to AI fallback
+
+    date_col  = _resolve_column(cols, _DATE_CANDIDATES)
+    desc_col  = _resolve_column(cols, _DESC_CANDIDATES)
 
     line_items: list[LineItem] = []
     for _, row in df.iterrows():
         try:
-            raw_amount = row.get("amount")
+            raw_amount = row.get(amount_col)
             line_items.append(LineItem(
-                date=str(row["date"]) if "date" in df.columns else None,
-                description=str(row["description"]) if "description" in df.columns else None,
+                date=str(row[date_col]) if date_col else None,
+                description=str(row[desc_col]) if desc_col else None,
                 amount=float(raw_amount) if pd.notna(raw_amount) else None,
                 gst_amount=(
                     float(row["gst_amount"])
-                    if "gst_amount" in df.columns and pd.notna(row.get("gst_amount"))
+                    if "gst_amount" in cols and pd.notna(row.get("gst_amount"))
                     else None
                 ),
-                category=row.get("category") if "category" in df.columns else None,
+                category=row.get("category") if "category" in cols else None,
                 ambiguity_score=0.1,
             ))
         except Exception:
@@ -196,7 +243,7 @@ def _rule_based_extraction(df: pd.DataFrame, doc_type: DocumentType, filename: s
         doc_type=doc_type,
         filename=filename,
         line_items=line_items,
-        total_amount=float(df["amount"].sum()),
+        total_amount=float(df[amount_col].sum()),
         overall_confidence=0.9,
     )
 
