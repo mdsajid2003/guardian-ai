@@ -4,17 +4,6 @@
 > Drop-in replacement for the Anthropic/Claude original. All UI and logic is identical.
 
 ---
-
-## What Changed vs. the Claude Version
-
-| | Original | This Version |
-|---|---|---|
-| **AI backend** | `anthropic` (Claude Sonnet) | `google-generativeai` (Gemini 1.5 Flash) |
-| **Secret key** | `ANTHROPIC_API_KEY` | `GEMINI_API_KEY` |
-| **Cost** | Paid | Free tier available |
-| **Changed files** | — | `extractor.py`, `analyst.py`, `amazon_recon.py`, `requirements.txt` |
-| **Unchanged files** | — | `app.py`, `state.py`, `validator.py`, `ppt_gen.py`, `image_proc.py` |
-
 ---
 
 ## 1 · Get a Free Gemini API Key
